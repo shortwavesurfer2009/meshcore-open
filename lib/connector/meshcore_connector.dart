@@ -1330,6 +1330,26 @@ class MeshCoreConnector extends ChangeNotifier {
     _retryService?.setMaxRetries(maxRetries);
   }
 
+  void _notifyBackgroundService() {
+    print('[Connector] _notifyBackgroundService: state=$_state, deviceId=$_deviceId');
+    if (!PlatformInfo.isAndroid) return;
+    final bg = _backgroundService;
+    if (bg == null) return;
+
+    if (_state == MeshCoreConnectionState.connected && _deviceId != null) {
+      unawaited(
+        bg.sendCommand({
+          'cmd': 'set_device',
+          'deviceId': _deviceId,
+          'deviceName': deviceDisplayName,
+          'selfPubKeyHex': selfPublicKeyHex,
+        }),
+      );
+    } else if (_state == MeshCoreConnectionState.disconnected) {
+      unawaited(bg.sendCommand({'cmd': 'disconnect'}));
+    }
+  }
+
   Future<void> loadContactCache() async {
     _contactUrlImagesEnabled.clear();
     final cached = await _contactStore.loadContacts();
@@ -7481,7 +7501,24 @@ class MeshCoreConnector extends ChangeNotifier {
   void _setState(MeshCoreConnectionState newState) {
     if (_disposed) return;
     if (_state != newState) {
+      final previousState = _state;
       _state = newState;
+      _notifyBackgroundService();
+
+      // Start background service when BLE connects
+      if (newState == MeshCoreConnectionState.connected &&
+          _activeTransport == MeshCoreTransportType.bluetooth) {
+        unawaited(_backgroundService?.start());
+      }
+
+      // Stop background service when user explicitly disconnects
+      // (manualDisconnect is set in the user-facing disconnect() method)
+      if (newState == MeshCoreConnectionState.disconnected &&
+          previousState != MeshCoreConnectionState.disconnected &&
+          _manualDisconnect) {
+        unawaited(_backgroundService?.stop());
+      }
+
       if (newState == MeshCoreConnectionState.connected) {
         if (_appSettingsService?.settings.notificationsEnabled ?? false) {
           unawaited(_notificationService.requestPermissionsOnce());

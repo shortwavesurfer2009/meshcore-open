@@ -15,6 +15,7 @@
     <!-- Foreground service permission for background BLE -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_BLUETOOTH"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- Camera permission for QR code scanning -->
     <uses-permission android:name="android.permission.CAMERA"/>

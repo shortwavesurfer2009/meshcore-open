@@ -368,6 +368,13 @@ class _MeshCoreAppState extends State<MeshCoreApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+
+    // Tell the background service the UI is back — it can hand BLE control back
+    if (state == AppLifecycleState.resumed && PlatformInfo.isAndroid) {
+      final bg = context.read<BackgroundService>();
+      unawaited(bg.sendCommand({'cmd': 'ui_alive'}));
+    }
+
     widget.receivedImageStore.setForeground(state == AppLifecycleState.resumed);
     // ~2.7 GiB resident in a backgrounded app is a low-memory-killer kill, so
     // unlike the translation stack the graph is dropped on background rather

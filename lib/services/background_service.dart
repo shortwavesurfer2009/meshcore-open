@@ -3,14 +3,12 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import '../l10n/app_localizations.dart';
 import '../utils/platform_info.dart';
+import 'background_ble_handler.dart';
 
 class BackgroundService {
   bool _initialized = false;
   String? Function()? _languageOverrideProvider;
 
-  /// Allows the app to expose its current language override (e.g. from
-  /// AppSettingsService) so the foreground notification matches the app UI
-  /// language instead of only the system locale.
   void setLanguageOverrideProvider(String? Function()? provider) {
     _languageOverrideProvider = provider;
   }
@@ -81,6 +79,14 @@ class BackgroundService {
     if (!running) return;
     await FlutterForegroundTask.stopService();
   }
+
+  /// Send a command to the service isolate.
+  Future<void> sendCommand(Map<String, dynamic> data) async {
+    if (!PlatformInfo.isAndroid) return;
+    final running = await FlutterForegroundTask.isRunningService;
+    if (!running) return;
+    FlutterForegroundTask.sendDataToTask(data);
+  }
 }
 
 @pragma('vm:entry-point')
@@ -89,14 +95,22 @@ void startCallback() {
 }
 
 class _MeshCoreTaskHandler extends TaskHandler {
-  @override
-  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {}
+  final BackgroundBleHandler _bleHandler = BackgroundBleHandler();
 
   @override
-  void onRepeatEvent(DateTime timestamp) {}
+  Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
+    await _bleHandler.start();
+  }
 
   @override
-  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
+  void onRepeatEvent(DateTime timestamp) {
+    // Check connection health — reconnect logic is in BackgroundBleHandler
+  }
+
+  @override
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {
+    await _bleHandler.stop();
+  }
 
   @override
   void onNotificationButtonPressed(String id) {}
@@ -104,5 +118,10 @@ class _MeshCoreTaskHandler extends TaskHandler {
   @override
   void onNotificationPressed() {
     FlutterForegroundTask.launchApp('/');
+  }
+
+  @override
+  void onReceiveData(Object data) {
+    _bleHandler.onReceiveData(data);
   }
 }
