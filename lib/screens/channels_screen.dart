@@ -12,6 +12,7 @@ import 'package:uuid/uuid.dart';
 import '../connector/meshcore_connector.dart';
 import '../l10n/l10n.dart';
 import '../services/app_settings_service.dart';
+import '../services/received_image_store.dart';
 import '../services/ui_view_state_service.dart';
 import '../models/channel.dart';
 import '../models/community.dart';
@@ -221,6 +222,7 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                           if (viewState.channelsSearchText.isNotEmpty)
                             IconButton(
                               icon: const Icon(Icons.clear),
+                              tooltip: context.l10n.common_clearSearch,
                               onPressed: () {
                                 _searchDebounce?.cancel();
                                 _searchDebounce = null;
@@ -361,7 +363,7 @@ class _ChannelsScreenState extends State<ChannelsScreen>
   }) {
     final unreadCount = connector.getUnreadCountForChannel(channel);
     final isMuted = context.watch<AppSettingsService>().isChannelMuted(
-      channel.name,
+      channel.muteKey,
     );
     final scheme = Theme.of(context).colorScheme;
 
@@ -402,7 +404,7 @@ class _ChannelsScreenState extends State<ChannelsScreen>
         iconColor = MeshPalette.signal;
       case ChannelType.hashtag:
         icon = Icons.tag;
-        iconColor = MeshPalette.blue;
+        iconColor = MeshPalette.warn;
       case ChannelType.private:
         icon = Icons.lock;
         iconColor = MeshPalette.blue;
@@ -516,14 +518,18 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'CH ${channel.index}',
-                        style: MeshTheme.mono(
-                          fontSize: 11,
-                          color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
+                      if (showDragHandle) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          'CH ${channel.index}',
+                          style: MeshTheme.mono(
+                            fontSize: 11,
+                            color: scheme.onSurfaceVariant.withValues(
+                              alpha: 0.7,
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
                     ],
                   ),
                   if (subtitle.isNotEmpty) ...[
@@ -584,17 +590,21 @@ class _ChannelsScreenState extends State<ChannelsScreen>
               ],
             ),
             if (showDragHandle && dragIndex != null) ...[
-              const SizedBox(width: 4),
               ReorderableDragStartListener(
                 index: dragIndex,
-                // Top-aligned with the "CH n" / time line. Bottom padding keeps
-                // a comfortable drag target without pushing the icon down.
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 8, right: 8, bottom: 16),
-                  child: Icon(
-                    Icons.drag_handle,
-                    size: 18,
-                    color: scheme.onSurfaceVariant,
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.grab,
+                  child: Tooltip(
+                    message: context.l10n.channels_dragToReorder,
+                    child: SizedBox(
+                      width: 48,
+                      height: 48,
+                      child: Icon(
+                        Icons.drag_indicator,
+                        size: 28,
+                        color: scheme.onSurface,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -613,7 +623,7 @@ class _ChannelsScreenState extends State<ChannelsScreen>
   ) {
     final parentContext = context;
     final settingsService = context.read<AppSettingsService>();
-    final isMuted = settingsService.isChannelMuted(channel.name);
+    final isMuted = settingsService.isChannelMuted(channel.muteKey);
 
     showModalBottomSheet(
       context: parentContext,
@@ -646,9 +656,9 @@ class _ChannelsScreenState extends State<ChannelsScreen>
               onTap: () async {
                 Navigator.pop(sheetContext);
                 if (isMuted) {
-                  await settingsService.unmuteChannel(channel.name);
+                  await settingsService.unmuteChannel(channel.muteKey);
                 } else {
-                  await settingsService.muteChannel(channel.name);
+                  await settingsService.muteChannel(channel.muteKey);
                 }
               },
             ),
@@ -814,6 +824,13 @@ class _ChannelsScreenState extends State<ChannelsScreen>
       connector.channels,
       connector.maxChannels,
     );
+    if (nextIndex == null) {
+      showDismissibleSnackBar(
+        context,
+        content: Text(context.l10n.channels_noFreeSlots),
+      );
+      return;
+    }
     final hasPublicChannel = connector.channels.any((c) => c.isPublicChannel);
     int? selectedOption;
     final nameController = TextEditingController();
@@ -1455,24 +1472,7 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                     controller: scrollController,
                     padding: const EdgeInsets.only(bottom: 24),
                     children: [
-                      buildOptionCard(
-                        optionIndex: 0,
-                        icon: Icons.add,
-                        title: sheetContext.l10n.channels_createPrivateChannel,
-                        subtitle:
-                            sheetContext.l10n.channels_createPrivateChannelDesc,
-                      ),
-                      if (selectedOption == 0)
-                        buildExpandedContent(_channelMessageStore)!,
-                      buildOptionCard(
-                        optionIndex: 1,
-                        icon: Icons.lock,
-                        title: sheetContext.l10n.channels_joinPrivateChannel,
-                        subtitle:
-                            sheetContext.l10n.channels_joinPrivateChannelDesc,
-                      ),
-                      if (selectedOption == 1)
-                        buildExpandedContent(_channelMessageStore)!,
+                      SectionHeader(sheetContext.l10n.channels_addSectionJoin),
                       if (!hasPublicChannel) ...[
                         buildOptionCard(
                           optionIndex: 2,
@@ -1494,12 +1494,33 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                       if (selectedOption == 3)
                         buildExpandedContent(_channelMessageStore)!,
                       buildOptionCard(
+                        optionIndex: 1,
+                        icon: Icons.lock,
+                        title: sheetContext.l10n.channels_joinPrivateChannel,
+                        subtitle:
+                            sheetContext.l10n.channels_joinPrivateChannelDesc,
+                      ),
+                      if (selectedOption == 1)
+                        buildExpandedContent(_channelMessageStore)!,
+                      buildOptionCard(
                         optionIndex: 4,
                         icon: Icons.qr_code_scanner,
                         title: sheetContext.l10n.community_scanQr,
                         subtitle: sheetContext.l10n.community_join,
                       ),
                       if (selectedOption == 4)
+                        buildExpandedContent(_channelMessageStore)!,
+                      SectionHeader(
+                        sheetContext.l10n.channels_addSectionCreate,
+                      ),
+                      buildOptionCard(
+                        optionIndex: 0,
+                        icon: Icons.add,
+                        title: sheetContext.l10n.channels_createPrivateChannel,
+                        subtitle:
+                            sheetContext.l10n.channels_createPrivateChannelDesc,
+                      ),
+                      if (selectedOption == 0)
                         buildExpandedContent(_channelMessageStore)!,
                       buildOptionCard(
                         optionIndex: 5,
@@ -1737,6 +1758,12 @@ class _ChannelsScreenState extends State<ChannelsScreen>
     ChannelMessageStore channelMessageStore,
     Channel channel,
   ) {
+    ReceivedImageStore? imageStore;
+    try {
+      imageStore = context.read<ReceivedImageStore>();
+    } on ProviderNotFoundException {
+      imageStore = null;
+    }
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -1756,6 +1783,7 @@ class _ChannelsScreenState extends State<ChannelsScreen>
                 await connector.deleteChannel(channel.index);
 
                 await channelMessageStore.clearChannelMessages(channel.index);
+                await imageStore?.deleteImagesForChannel(channel.index);
 
                 if (!context.mounted) return;
 
@@ -1800,12 +1828,12 @@ class _ChannelsScreenState extends State<ChannelsScreen>
     );
   }
 
-  int _findNextAvailableIndex(List<Channel> channels, int maxChannels) {
+  int? _findNextAvailableIndex(List<Channel> channels, int maxChannels) {
     final usedIndices = channels.map((c) => c.index).toSet();
     for (int i = 0; i < maxChannels; i++) {
       if (!usedIndices.contains(i)) return i;
     }
-    return 0;
+    return null;
   }
 
   void _showManageCommunitiesDialog(BuildContext context) {
