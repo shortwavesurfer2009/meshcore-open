@@ -20,7 +20,7 @@ class BackgroundBleHandler {
   static const String _txCharacteristicUuid =
       "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
-  dynamic _device;
+  fbp.BluetoothDevice? _device;
   fbp.BluetoothCharacteristic? _rxCharacteristic;
   fbp.BluetoothCharacteristic? _txCharacteristic;
   StreamSubscription<fbp.BluetoothConnectionState>? _connectionSubscription;
@@ -28,11 +28,13 @@ class BackgroundBleHandler {
   Timer? _reconnectTimer;
   bool _manualDisconnect = false;
   bool _isConnected = false;
+  bool _connectInFlight = false;
 
   final MessageStore _messageStore = MessageStore();
   final NotificationService _notificationService = NotificationService();
 
   Future<void> start() async {
+    await PrefsManager.initialize(); // fresh engine needs its own init
     await _notificationService.initialize();
     await _loadLastDevice();
     await _connect();
@@ -42,6 +44,13 @@ class BackgroundBleHandler {
     _manualDisconnect = true;
     _reconnectTimer?.cancel();
     await _disconnect();
+  }
+
+  /// Called by the task handler's periodic repeat event. Retries the
+  /// connection whenever the link is down and no attempt is already running.
+  void onTick() {
+    if (_isConnected || _manualDisconnect || _connectInFlight) return;
+    unawaited(_connect());
   }
 
   void onReceiveData(Object data) {
@@ -83,89 +92,94 @@ class BackgroundBleHandler {
   }
 
   Future<void> _connect() async {
-    if (_manualDisconnect) return;
-
-    final prefs = PrefsManager.instance;
-    final deviceId = prefs.getString(_lastDeviceIdKey);
-    if (deviceId == null || deviceId.isEmpty) return;
-
+    if (_connectInFlight) return;
+    _connectInFlight = true;
     try {
-      await fbp.FlutterBluePlus.startScan(
-        withServices: [], // scan all, filter by device ID
-        timeout: const Duration(seconds: 10),
+      print(
+        '[BackgroundBleHandler] _connect: manualDisconnect=$_manualDisconnect',
       );
+      if (_manualDisconnect) return;
 
-      fbp.BluetoothDevice? foundDevice;
-      await for (final results in fbp.FlutterBluePlus.scanResults) {
-        for (final result in results) {
-          if (result.device.remoteId.toString() == deviceId) {
-            foundDevice = result.device;
-            break;
-          }
-        }
-        if (foundDevice != null) break;
-      }
-      await fbp.FlutterBluePlus.stopScan();
+      final prefs = PrefsManager.instance;
+      final deviceId = prefs.getString(_lastDeviceIdKey);
+      print('[BackgroundBleHandler] _connect: deviceId=$deviceId');
+      if (deviceId == null || deviceId.isEmpty) return;
 
-      if (foundDevice == null) {
-        _scheduleReconnect();
+      // Don't grab the link while the UI engine holds it.
+      final heldElsewhere = fbp.FlutterBluePlus.connectedDevices.any(
+        (d) => d.remoteId.toString() == deviceId,
+      );
+      if (heldElsewhere) {
+        print('[BackgroundBleHandler] _connect: link held by UI, parking');
         return;
       }
 
-      _device = foundDevice;
-      await _device.connect(
-        timeout: const Duration(seconds: 15),
-        autoConnect: false,
-      );
+      try {
+        final device = fbp.BluetoothDevice.fromId(deviceId);
+        _device = device; // stored for _disconnect; use local 'device' below
+        print('[BackgroundBleHandler] _connect: connecting directly');
+        await device.connect(
+          license: fbp.License.nonprofit, // must match the UI's license
+          timeout: const Duration(seconds: 15),
+          mtu: 185, // requested on connect; no separate requestMtu needed
+          autoConnect: false,
+        );
+        print('[BackgroundBleHandler] _connect: connected, discovering');
 
-      final services = await _device.discoverServices();
-      for (final service in services) {
-        final serviceUuid = service.serviceUuid.toString().toLowerCase();
-        if (serviceUuid == _serviceUuid.toLowerCase()) {
-          for (final characteristic in service.characteristics) {
-            final charUuid = characteristic.characteristicUuid
-                .toString()
-                .toLowerCase();
-            if (charUuid == _rxCharacteristicUuid.toLowerCase()) {
-              _rxCharacteristic = characteristic;
-            } else if (charUuid == _txCharacteristicUuid.toLowerCase()) {
-              _txCharacteristic = characteristic;
+        final services = await device.discoverServices();
+        for (final service in services) {
+          final serviceUuid = service.serviceUuid.toString().toLowerCase();
+          if (serviceUuid == _serviceUuid.toLowerCase()) {
+            for (final characteristic in service.characteristics) {
+              final charUuid = characteristic.characteristicUuid
+                  .toString()
+                  .toLowerCase();
+              if (charUuid == _rxCharacteristicUuid.toLowerCase()) {
+                _rxCharacteristic = characteristic;
+              } else if (charUuid == _txCharacteristicUuid.toLowerCase()) {
+                _txCharacteristic = characteristic;
+              }
             }
           }
         }
-      }
 
-      if (_rxCharacteristic == null || _txCharacteristic == null) {
-        await _disconnect();
-        _scheduleReconnect();
-        return;
-      }
-
-      await _txCharacteristic!.setNotifyValue(true);
-      _notifySubscription = _txCharacteristic!.onValueReceived.listen(
-        _onDataReceived,
-        onError: (Object e) {
+        if (_rxCharacteristic == null || _txCharacteristic == null) {
+          print('[BackgroundBleHandler] _connect: characteristics not found');
+          await _disconnect();
           _scheduleReconnect();
-        },
-      );
-
-      _connectionSubscription = _device.connectionState.listen((state) {
-        if (state == fbp.BluetoothConnectionState.disconnected) {
-          _isConnected = false;
-          _notifyUi('connection_state', {'connected': false});
-          if (!_manualDisconnect) {
-            _scheduleReconnect();
-          }
+          return;
         }
-      });
 
-      _isConnected = true;
-      _reconnectTimer?.cancel();
-      _notifyUi('connection_state', {'connected': true});
+        await _txCharacteristic!.setNotifyValue(true);
+        _notifySubscription = _txCharacteristic!.onValueReceived.listen(
+          _onDataReceived,
+          onError: (Object e) {
+            _scheduleReconnect();
+          },
+        );
 
-      _sendFrame(buildAppStartFrame());
-    } catch (e) {
-      _scheduleReconnect();
+        _connectionSubscription = device.connectionState.listen((state) {
+          if (state == fbp.BluetoothConnectionState.disconnected) {
+            _isConnected = false;
+            _notifyUi('connection_state', {'connected': false});
+            if (!_manualDisconnect) {
+              _scheduleReconnect();
+            }
+          }
+        });
+
+        _isConnected = true;
+        _reconnectTimer?.cancel();
+        print('[BackgroundBleHandler] _connect: link up');
+        _notifyUi('connection_state', {'connected': true});
+
+        _sendFrame(buildAppStartFrame());
+      } catch (e, st) {
+        print('[BackgroundBleHandler] _connect failed: $e\n$st');
+        _scheduleReconnect();
+      }
+    } finally {
+      _connectInFlight = false;
     }
   }
 

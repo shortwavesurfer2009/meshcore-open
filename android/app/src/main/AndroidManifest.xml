@@ -28,6 +28,7 @@
         android:icon="@mipmap/ic_launcher">
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:process=":foreground"
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
             android:stopWithTask="false" />

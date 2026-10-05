@@ -53,6 +53,7 @@ import '../storage/contact_discovery_store.dart';
 import '../storage/contact_settings_store.dart';
 import '../storage/contact_store.dart';
 import '../storage/message_store.dart';
+import '../storage/prefs_manager.dart';
 import '../storage/unread_store.dart';
 import '../utils/app_logger.dart';
 import '../utils/battery_utils.dart';
@@ -1331,20 +1332,36 @@ class MeshCoreConnector extends ChangeNotifier {
   }
 
   void _notifyBackgroundService() {
-    print('[Connector] _notifyBackgroundService: state=$_state, deviceId=$_deviceId');
+    print(
+      '[Connector] _notifyBackgroundService: state=$_state, deviceId=$_deviceId',
+    );
     if (!PlatformInfo.isAndroid) return;
     final bg = _backgroundService;
     if (bg == null) return;
 
     if (_state == MeshCoreConnectionState.connected && _deviceId != null) {
-      unawaited(
-        bg.sendCommand({
+      final id = _deviceId!; // capture now, before the async gap
+      final pubKey = selfPublicKeyHex;
+      final name = deviceDisplayName;
+      unawaited(() async {
+        // Persist FIRST so the service can pull it even if sendDataToTask drops.
+        await PrefsManager.initialize(); // idempotent; already done in main()
+        await PrefsManager.instance.setString(
+          'background_ble_last_device_id',
+          id,
+        );
+        await PrefsManager.instance.setString(
+          'background_ble_self_pubkey',
+          pubKey,
+        );
+        await bg.start(); // ensure service is up FIRST
+        await bg.sendCommand({
           'cmd': 'set_device',
-          'deviceId': _deviceId,
-          'deviceName': deviceDisplayName,
-          'selfPubKeyHex': selfPublicKeyHex,
-        }),
-      );
+          'deviceId': id,
+          'deviceName': name,
+          'selfPubKeyHex': pubKey,
+        });
+      }());
     } else if (_state == MeshCoreConnectionState.disconnected) {
       unawaited(bg.sendCommand({'cmd': 'disconnect'}));
     }

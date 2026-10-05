@@ -91,6 +91,7 @@ class BackgroundService {
 
 @pragma('vm:entry-point')
 void startCallback() {
+  print('[BackgroundService] startCallback entered'); // <-- add this
   FlutterForegroundTask.setTaskHandler(_MeshCoreTaskHandler());
 }
 
@@ -99,12 +100,25 @@ class _MeshCoreTaskHandler extends TaskHandler {
 
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    await _bleHandler.start();
+    print('[BackgroundService] onStart fired: $starter'); // <-- add this
+    try {
+      await _bleHandler.start();
+      await FlutterForegroundTask.updateService(
+        notificationTitle: 'MeshCore',
+        notificationText: 'bg up (${starter.name})',
+      );
+    } catch (e, st) {
+      await FlutterForegroundTask.updateService(
+        notificationTitle: 'MeshCore',
+        notificationText: 'bg error: $e',
+      );
+      print('[BackgroundBleHandler] onStart failed: $e\n$st');
+    }
   }
 
   @override
   void onRepeatEvent(DateTime timestamp) {
-    // Check connection health — reconnect logic is in BackgroundBleHandler
+    _bleHandler.onTick();
   }
 
   @override
