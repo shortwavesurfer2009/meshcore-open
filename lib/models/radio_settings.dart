@@ -500,6 +500,7 @@ class RadioSettings {
         codingRate: LoRaCodingRate.cr4_5,
         txPowerDbm: 22,
       ),
+    ),
     (
       'USA/Canada (legacy)',
       RadioSettings(
@@ -509,7 +510,6 @@ class RadioSettings {
         codingRate: LoRaCodingRate.cr4_5,
         txPowerDbm: 22,
       ),
-
     ),
     (
       'Vietnam',
